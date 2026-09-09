@@ -92,3 +92,25 @@ def test_apply_release_refuses_when_not_frozen(monkeypatch):
     monkeypatch.setattr(update.sys, "frozen", False, raising=False)
     applied, message = update.apply_release("https://example.invalid/x.exe")
     assert not applied and "собранной" in message
+
+
+def test_release_check_uses_rolling_prerelease_tag(monkeypatch):
+    """Скользящая сборка помечена предрелизом, и /releases/latest её не отдаёт."""
+    asked: list[str] = []
+    tagged = {
+        "name": "Последняя сборка", "body": "Коммит: 1111111111111111",
+        "published_at": "2026-09-09T06:28:42Z",
+        "assets": [{"name": "fns-portal.exe", "updated_at": "2026-09-09T06:28:45Z",
+                    "browser_download_url": "https://example.invalid/fns-portal.exe"}],
+    }
+
+    def fake_fetch(url: str):
+        asked.append(url)
+        return tagged if url.endswith("/releases/tags/latest") else None
+
+    monkeypatch.setattr(update, "_fetch_json", fake_fetch)
+    monkeypatch.setattr(update, "build_info",
+                        lambda: {"commit": "2222222222", "built_at": "2026-09-08T00:00:00Z"})
+    info = update.check_release("owner/repo")
+    assert asked[0].endswith("/releases/tags/latest")
+    assert info.available

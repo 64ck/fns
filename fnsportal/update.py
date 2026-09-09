@@ -28,6 +28,10 @@ from . import config
 
 DEFAULT_REPO = "64ck/fns"
 RELEASE_ASSET = "fns-portal.exe"
+# Свежая сборка выкладывается «скользящим» предрелизом с тегом latest.
+# Эндпоинт /releases/latest предрелизы не возвращает, поэтому сначала
+# спрашиваем релиз по тегу и только потом — обычный «последний».
+RELEASE_TAG = "latest"
 TIMEOUT = 12
 GIT_TIMEOUT = 60
 
@@ -142,8 +146,9 @@ def check_release(repo: str | None = None) -> UpdateInfo:
     коммита считается признаком того же самого выпуска.
     """
     repo = repo or repo_name()
-    data = _fetch_json(f"https://api.github.com/repos/{repo}/releases/latest")
-    if not data:
+    data = (_fetch_json(f"https://api.github.com/repos/{repo}/releases/tags/{RELEASE_TAG}")
+            or _fetch_json(f"https://api.github.com/repos/{repo}/releases/latest"))
+    if not data or not data.get("assets"):
         return UpdateInfo(message="сервер обновлений недоступен")
     asset = next((item for item in data.get("assets", [])
                   if item.get("name") == RELEASE_ASSET), None)

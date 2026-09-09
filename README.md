@@ -31,10 +31,17 @@
 # откройте http://127.0.0.1:8000
 ```
 
-Windows / вручную:
+Windows (cmd) — то же самое одной командой:
 
-```bash
-python -m venv .venv && .venv\Scripts\activate      # Linux/macOS: source .venv/bin/activate
+```bat
+run.bat
+```
+
+Вручную (cmd; в PowerShell активация — `.venv\Scripts\Activate.ps1`):
+
+```bat
+python -m venv .venv
+.venv\Scripts\activate
 pip install -r requirements.txt
 
 python -m fnsportal init          # создать БД + справочники + методичку 5-ТН
@@ -42,6 +49,9 @@ python -m fnsportal demo          # демонстрационные данны�
 python -m fnsportal build-terms   # словарь для облаков слов
 python -m fnsportal serve         # http://127.0.0.1:8000
 ```
+
+На Linux/macOS вместо `.venv\Scripts\activate` — `source .venv/bin/activate`,
+либо просто `./run.sh`.
 
 `demo` создаёт **синтетический** набор с реальной структурой (те же показатели
 формы 5-ТН, те же категории льготников), чтобы портал можно было посмотреть до

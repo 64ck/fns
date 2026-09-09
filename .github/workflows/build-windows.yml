@@ -6,6 +6,11 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
+# Публикация релиза требует права записи в содержимое репозитория:
+# по умолчанию токен сборки доступен только на чтение.
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: windows-latest
@@ -40,7 +45,9 @@ jobs:
             if (-not $meta.taxes) { throw "API вернул пустой список налогов" }
             Write-Host "Портал ответил, налогов в справочнике:" $meta.taxes.Count
           } finally {
+            # onefile-сборка запускает дочерний процесс, поэтому гасим по имени
             Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+            Get-Process fns-portal -ErrorAction SilentlyContinue | Stop-Process -Force
           }
 
       - uses: actions/upload-artifact@v4
@@ -49,8 +56,11 @@ jobs:
           path: dist/fns-portal.exe
           retention-days: 90
 
+      # Если у репозитория закрыта запись для Actions, публикация релиза
+      # не должна ронять сборку: exe остаётся доступен как артефакт.
       - name: Свежая сборка в релиз «latest»
         if: github.ref_type == 'branch'
+        continue-on-error: true
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest

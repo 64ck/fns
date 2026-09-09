@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Callable, Iterator
 
 from . import analytics, config, db
-from .sources import forms, rates, tablestream
+from .sources import fnsxml, forms, rates, tablestream
 
 SUPPORTED = tablestream.TABLE_SUFFIXES | {".zip", ".gz"}
 SKIP_DIRS = {
@@ -84,6 +84,12 @@ def classify(
     """
     codes = codes if codes is not None else _known_codes(conn)
     aliases = rates.load_aliases()
+
+    # XML-выгрузка открытых данных распознаётся по своей структуре: там нет
+    # таблиц, а есть документы <tp> со ставками <tr> и льготами <tb>
+    if fnsxml.looks_like_export(path):
+        return "rates-xml", "выгрузка открытых данных ФНС (документы <tp>)", None
+
     try:
         for table in tablestream.iter_tables(path):
             probe: list[list[str]] = []
@@ -178,7 +184,7 @@ def run(
         
         log(f"  → {path.name} ({size_mb:.1f} МБ): {kind}, {note}")
         try:
-            if kind == "rates":
+            if kind in {"rates", "rates-xml"}:
                 started = time.time()
                 last_shown = [started]
 
@@ -194,7 +200,8 @@ def run(
                         f"прошло {elapsed / 60:4.0f} мин, осталось ~{left / 60:.0f} мин"
                         .replace(",", " "))
 
-                stats = rates.load_file(conn, path, progress=show if size_mb > 50 else None)
+                loader = rates.load_fns_xml if kind == "rates-xml" else rates.load_file
+                stats = loader(conn, path, progress=show if size_mb > 50 else None)
                 summary = (f"ставок {stats.rates}, льгот {stats.benefits}"
                            f" из {stats.rows_read} строк")
                 benefits_added = benefits_added or stats.benefits > 0

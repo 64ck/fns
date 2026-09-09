@@ -17,7 +17,11 @@ def test_profile_has_key_indicators_and_counts(filled):
     assert profile["region"]["name"] == "город Москва"
     assert profile["key_indicators"], "должны быть итоговые показатели разделов"
     assert profile["counts"]["rates"] > 0
-    assert set(profile["benefits_by_payer"]) <= {"fl", "ip", "ul", "all"}
+    counts = profile["benefits_by_payer"]
+    assert set(counts) == {"fl", "ip", "ul", "all", "total"}
+    # одна льгота может относиться к нескольким категориям, но каждая
+    # категория по отдельности не может превысить общее число льгот
+    assert all(counts[key] <= counts["total"] for key in ("fl", "ul", "ip", "all"))
 
 
 def test_series_adds_average_and_rank(filled):

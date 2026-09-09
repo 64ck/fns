@@ -15,6 +15,7 @@ import sqlite3
 from typing import Sequence
 
 from . import config
+from .sources.rates import flags_for
 from .textutil import detect_payer
 
 RATE_OBJECTS = [
@@ -186,7 +187,8 @@ def _generate_rates(conn, rng, regions, years, tax_code) -> int:
                 payer = "all" if rng.random() < 0.75 else rng.choice(["fl", "ul"])
                 rows.append((
                     year, year, year, region["code"], tax_code, None, None,
-                    payer, {"all": "", "fl": "Физические лица", "ul": "Юридические лица"}[payer],
+                    payer, *flags_for(payer),
+                    {"all": "", "fl": "Физические лица", "ul": "Юридические лица"}[payer],
                     object_name, value, f"{value} руб. с каждой лошадиной силы",
                     "руб./л.с.", "", f"О транспортном налоге в {region['name']}",
                     f"{rng.randint(10, 250)}-ОЗ", f"{year - 1}-11-{rng.randint(10, 28):02d}",
@@ -195,10 +197,11 @@ def _generate_rates(conn, rng, regions, years, tax_code) -> int:
     with conn:
         conn.executemany(
             """INSERT INTO rate (year, year_from, year_to, region_code, tax_code, oktmo,
-                                 mo_name, payer, payer_text, object_name, rate_value,
+                                 mo_name, payer, for_fl, for_ul, for_ip, payer_text,
+                                 object_name, rate_value,
                                  rate_text, rate_unit, condition, npa_name, npa_number,
                                  npa_date, npa_authority, period_from, period_to, source_file)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", rows)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", rows)
     return len(rows)
 
 
@@ -217,9 +220,10 @@ def _generate_benefits(conn, rng, regions, years, tax_code) -> int:
                     end = start
                 kind = rng.choice(BENEFIT_KINDS)
                 size = 100 if kind.startswith("Освобождение") else rng.choice([20, 30, 50, 70])
+                payer = detect_payer(category) or expected_payer
                 rows.append((
                     start, start, end, region["code"], tax_code, None, None,
-                    detect_payer(category) or expected_payer, category, kind,
+                    payer, *flags_for(payer), category, kind,
                     f"{size} процентов", float(size), "%",
                     rng.choice(BENEFIT_CONDITIONS),
                     f"пункт {rng.randint(1, 9)} статьи {rng.randint(2, 12)}",
@@ -231,8 +235,9 @@ def _generate_benefits(conn, rng, regions, years, tax_code) -> int:
     with conn:
         conn.executemany(
             """INSERT INTO benefit (year, year_from, year_to, region_code, tax_code, oktmo,
-                                    mo_name, payer, category, kind, size_text, size_value,
+                                    mo_name, payer, for_fl, for_ul, for_ip, category, kind,
+                                    size_text, size_value,
                                     size_unit, condition, basis, npa_name, npa_number,
                                     npa_date, npa_authority, period_from, period_to, source_file)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", rows)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", rows)
     return len(rows)

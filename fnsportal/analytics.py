@@ -15,6 +15,19 @@ from .textutil import normal_form, stopword_set, terms as extract_terms
 
 # Норма действует в году :year, если год указан явно либо год попадает в
 # период действия НПА (открытый период трактуется как «по настоящее время»).
+# Ставка или льгота может относиться сразу к нескольким категориям
+# плательщиков, поэтому фильтр идёт по флагам, а не по одному полю payer.
+PAYER_FLAG = {"fl": "for_fl", "ul": "for_ul", "ip": "for_ip"}
+
+
+def payer_clause(payer: str | None) -> str:
+    if payer in PAYER_FLAG:
+        return f" AND {PAYER_FLAG[payer]} = 1"
+    if payer == "all":
+        return " AND payer = 'all'"
+    return ""
+
+
 YEAR_FILTER = (
     "(COALESCE(year_from, year) IS NULL"
     " OR (COALESCE(year_from, year) <= :year"
@@ -279,7 +292,7 @@ def rates(
         "payer": payer, "q": f"%{search.lower()}%", "limit": limit, "offset": offset,
     }
     where = f"""WHERE tax_code=:tax AND region_code=:region AND {YEAR_FILTER}
-                  AND (:payer IS NULL OR payer=:payer)
+                  {payer_clause(payer)}
                   AND (:q = '%%' OR lower(COALESCE(object_name,'') || ' ' ||
                        COALESCE(payer_text,'') || ' ' || COALESCE(npa_name,'')) LIKE :q)"""
     total = conn.execute(f"SELECT COUNT(*) AS n FROM rate {where}", params).fetchone()["n"]
@@ -288,7 +301,8 @@ def rates(
                    object_name, rate_value, rate_text, rate_unit, condition,
                    npa_name, npa_number, npa_date, npa_authority
               FROM rate {where}
-             ORDER BY (mo_name IS NOT NULL AND mo_name <> ''), object_name, rate_value
+             ORDER BY (mo_name IS NOT NULL AND mo_name <> ''),
+                      COALESCE(object_group, object_name), object_name, rate_value
              LIMIT :limit OFFSET :offset""", params))
     return {"total": total, "items": items}
 
@@ -308,25 +322,36 @@ def benefits(
         "payer": payer, "q": f"%{search.lower()}%", "limit": limit, "offset": offset,
     }
     where = f"""WHERE tax_code=:tax AND region_code=:region AND {YEAR_FILTER}
-                  AND (:payer IS NULL OR payer=:payer)
+                  {payer_clause(payer)}
                   AND (:q = '%%' OR lower(COALESCE(category,'') || ' ' ||
                        COALESCE(kind,'') || ' ' || COALESCE(condition,'') || ' ' ||
                        COALESCE(basis,'')) LIKE :q)"""
     total = conn.execute(f"SELECT COUNT(*) AS n FROM benefit {where}", params).fetchone()["n"]
     items = _rows(conn.execute(
-        f"""SELECT id, year, year_from, year_to, oktmo, mo_name, payer, category, kind,
+        f"""SELECT id, year, year_from, year_to, oktmo, mo_name, payer,
+                   for_fl, for_ul, for_ip, category, kind,
                    size_text, size_value, size_unit, condition, basis,
                    npa_name, npa_number, npa_date, npa_authority
               FROM benefit {where}
              ORDER BY payer, category LIMIT :limit OFFSET :offset""", params))
-    by_payer = {
-        row["payer"]: row["n"] for row in conn.execute(
-            f"""SELECT payer, COUNT(*) AS n FROM benefit
-                WHERE tax_code=:tax AND region_code=:region AND {YEAR_FILTER}
-                GROUP BY payer""",
-            {"tax": tax_code, "year": year, "region": region_code})
-    }
-    return {"total": total, "items": items, "by_payer": by_payer}
+    return {"total": total, "items": items,
+            "by_payer": benefit_counts(conn, tax_code, year, region_code)}
+
+
+def benefit_counts(conn: sqlite3.Connection, tax_code: str, year: int, region_code: str) -> dict:
+    """Сколько льгот действует по каждой категории плательщиков.
+
+    Одна льгота может относиться сразу к нескольким категориям, поэтому сумма
+    по категориям больше общего числа льгот — это не ошибка подсчёта."""
+    row = conn.execute(
+        f"""SELECT SUM(for_fl) AS fl, SUM(for_ul) AS ul, SUM(for_ip) AS ip,
+                   SUM(CASE WHEN payer='all' THEN 1 ELSE 0 END) AS mixed,
+                   COUNT(*) AS total
+              FROM benefit
+             WHERE tax_code=:tax AND region_code=:region AND {YEAR_FILTER}""",
+        {"tax": tax_code, "year": year, "region": region_code}).fetchone()
+    return {"fl": row["fl"] or 0, "ul": row["ul"] or 0, "ip": row["ip"] or 0,
+            "all": row["mixed"] or 0, "total": row["total"] or 0}
 
 
 def profile(conn: sqlite3.Connection, tax_code: str, year: int, region_code: str) -> dict:
@@ -343,13 +368,7 @@ def profile(conn: sqlite3.Connection, tax_code: str, year: int, region_code: str
               (SELECT COUNT(DISTINCT COALESCE(oktmo,'')) FROM rate
                 WHERE tax_code=:tax AND region_code=:region AND {YEAR_FILTER}) AS municipalities
         """, {"tax": tax_code, "year": year, "region": region_code}).fetchone()
-    benefits_by_payer = {
-        row["payer"]: row["n"] for row in conn.execute(
-            f"""SELECT payer, COUNT(*) AS n FROM benefit
-                 WHERE tax_code=:tax AND region_code=:region AND {YEAR_FILTER}
-                 GROUP BY payer""",
-            {"tax": tax_code, "year": year, "region": region_code})
-    }
+    benefits_by_payer = benefit_counts(conn, tax_code, year, region_code)
     return {
         "region": dict(region) if region else {"code": region_code, "name": region_code},
         "tax_code": tax_code,
@@ -403,7 +422,7 @@ def build_terms(
 
     columns = ", ".join(f"COALESCE({f}, '')" for f in fields if f in TERM_FIELDS)
     cur = conn.execute(
-        f"""SELECT tax_code, region_code, payer,
+        f"""SELECT tax_code, region_code, payer, for_fl, for_ul, for_ip,
                    COALESCE(year_from, year) AS y_from,
                    COALESCE(year_to, COALESCE(year_from, year)) AS y_to,
                    {columns} AS text
@@ -454,15 +473,21 @@ def build_terms(
             local[(norm, is_bigram)] = local.get((norm, is_bigram), 0) + 1
             bucket = display.setdefault(norm, {})
             bucket[surface] = bucket.get(surface, 0) + 1
+        # льгота попадает в ведро каждой категории, к которой она относится
+        payers = [name for name, flag in
+                  (("fl", row["for_fl"]), ("ul", row["for_ul"]), ("ip", row["for_ip"])) if flag]
+        if not payers:
+            payers = [row["payer"] or "all"]
         for year in year_range:
-            for (norm, is_bigram), freq in local.items():
-                key = (row["tax_code"], year, row["region_code"], row["payer"], norm, int(is_bigram))
-                cell = counts.get(key)
-                if cell is None:
-                    counts[key] = [freq, 1]
-                else:
-                    cell[0] += freq
-                    cell[1] += 1
+            for payer in payers:
+                for (norm, is_bigram), freq in local.items():
+                    key = (row["tax_code"], year, row["region_code"], payer, norm, int(is_bigram))
+                    cell = counts.get(key)
+                    if cell is None:
+                        counts[key] = [freq, 1]
+                    else:
+                        cell[0] += freq
+                        cell[1] += 1
         if len(counts) >= flush_every:
             flush()
             if progress:

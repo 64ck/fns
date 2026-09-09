@@ -352,11 +352,12 @@ async function renderRates() {
 function renderPayerChips(selector, active, onSelect, extra = {}) {
   const options = { ...extra, fl: "Физические лица", ip: "Индивидуальные предприниматели", ul: "Юридические лица" };
   const counts = (profileCache && profileCache.benefits_by_payer) || {};
-  const totalCount = Object.values(counts).reduce((sum, value) => sum + value, 0);
   const showCounts = selector.includes("benefit") || selector.includes("cloud");
   const box = $(selector);
   box.innerHTML = Object.entries(options).map(([key, label]) => {
-    const count = !showCounts ? null : (key === "" ? totalCount : counts[key]);
+    // ФНС помечает льготу всеми категориями, к которым она относится,
+    // поэтому сумма по категориям больше общего числа — берём готовый total
+    const count = !showCounts ? null : (key === "" ? counts.total : counts[key]);
     return `<button class="chip ${key === active ? "active" : ""}" data-payer="${key}">
         ${esc(label)}${count != null ? `<span class="count">${count}</span>` : ""}</button>`;
   }).join("");

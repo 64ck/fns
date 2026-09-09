@@ -33,18 +33,35 @@ HEADER_MARKERS = ("налог", "регион", "ставк", "льгот")
 
 RATE_COLUMNS = (
     "year", "year_from", "year_to", "region_code", "tax_code", "oktmo", "mo_name",
-    "payer", "payer_text", "object_name", "rate_value", "rate_text", "rate_unit",
+    "payer", "for_fl", "for_ul", "for_ip", "payer_text", "object_name", "object_group",
+    "rate_value", "rate_text", "rate_unit",
     "condition", "npa_name", "npa_number", "npa_date", "npa_authority",
     "period_from", "period_to", "source_file",
 )
 BENEFIT_COLUMNS = (
     "year", "year_from", "year_to", "region_code", "tax_code", "oktmo", "mo_name",
-    "payer", "category", "kind", "size_text", "size_value", "size_unit",
-    "condition", "basis", "npa_name", "npa_number", "npa_date", "npa_authority",
-    "period_from", "period_to", "source_file",
+    "payer", "for_fl", "for_ul", "for_ip", "category", "kind", "size_text", "size_value",
+    "size_unit", "condition", "basis", "npa_name", "npa_number", "npa_date",
+    "npa_authority", "period_from", "period_to", "source_file",
 )
 
 _DATE_RE = re.compile(r"(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{4})|(\d{4})-(\d{2})-(\d{2})")
+
+
+def flags_for(payer: str) -> tuple[int, int, int]:
+    """Флаги категорий по одной определённой категории плательщика.
+
+    'all' здесь означает «категория не определена по тексту», а не «относится
+    ко всем»: такие записи не должны подмешиваться во вкладки ФЛ, ЮЛ и ИП —
+    они видны по фильтру «Без разделения».
+    """
+    return int(payer == "fl"), int(payer == "ul"), int(payer == "ip")
+
+
+def payer_from_flags(flags: dict[str, bool]) -> str:
+    """Основная категория: одна отмеченная — она и есть, несколько — 'all'."""
+    marked = [name for name, value in flags.items() if value]
+    return marked[0] if len(marked) == 1 else "all"
 
 
 @dataclass
@@ -384,9 +401,10 @@ def parse_record(
     payer_text = value("payer_text")
     rate_row = None
     if rate_text or object_name:
+        payer = detect_payer(payer_text, object_name)
         rate_row = (
             year, year_from, year_to, region, tax, oktmo, mo_name,
-            detect_payer(payer_text, object_name), payer_text, object_name,
+            payer, *flags_for(payer), payer_text, object_name, object_name.partition(":")[0],
             parse_number(rate_text), rate_text, value("rate_unit"), condition,
             *npa, *period, source,
         )
@@ -397,12 +415,151 @@ def parse_record(
     basis = value("basis")
     benefit_row = None
     if category or kind or size_text:
+        payer = detect_payer(payer_text, category, kind)
         benefit_row = (
             year, year_from, year_to, region, tax, oktmo, mo_name,
-            detect_payer(payer_text, category, kind), category, kind, size_text,
+            payer, *flags_for(payer), category, kind, size_text,
             parse_number(size_text), value("benefit_unit"), condition, basis,
             *npa, *period, source,
         )
     if rate_row is None and benefit_row is None:
         return None
     return rate_row, benefit_row, miss
+
+
+# --------------------------------------------------- XML-выгрузка открытых данных
+
+def load_fns_xml(
+    conn: sqlite3.Connection,
+    path: Path | str,
+    *,
+    tax_code: str | None = None,
+    limit: int | None = None,
+    progress: object | None = None,
+) -> LoadStats:
+    """Загружает XML-выгрузку ФНС (7707329152-taxrates).
+
+    В отличие от csv/html здесь не нужно угадывать ни колонки, ни категорию
+    плательщика: структура выгрузки известна, а Fl / UL / IP проставлены самой
+    ФНС. Регион и налог раскрываются через справочник List в начале файла.
+    """
+    from . import fnsxml
+
+    path = Path(path)
+    regions = RegionResolver(conn)
+    taxes = TaxResolver(conn)
+    stats = LoadStats()
+    list_values = fnsxml.read_list_values(path)
+
+    rate_sql = (f"INSERT INTO rate ({','.join(RATE_COLUMNS)}) "
+                f"VALUES ({','.join('?' * len(RATE_COLUMNS))})")
+    benefit_sql = (f"INSERT INTO benefit ({','.join(BENEFIT_COLUMNS)}) "
+                   f"VALUES ({','.join('?' * len(BENEFIT_COLUMNS))})")
+    rate_batch: list[tuple] = []
+    benefit_batch: list[tuple] = []
+
+    def flush() -> None:
+        if rate_batch:
+            conn.executemany(rate_sql, rate_batch)
+            rate_batch.clear()
+        if benefit_batch:
+            conn.executemany(benefit_sql, benefit_batch)
+            benefit_batch.clear()
+        conn.commit()
+
+    total_bytes = path.stat().st_size
+    read_bytes = 0
+
+    def note_progress(position: int) -> None:
+        nonlocal read_bytes
+        read_bytes = position
+
+    region_cache: dict[str, str | None] = {}
+    tax_cache: dict[str, str | None] = {}
+
+    def resolve_region(ident: str) -> str | None:
+        if ident not in region_cache:
+            value = list_values.get(ident, ident)
+            code, _, name = value.partition("-")
+            region_cache[ident] = regions.resolve(code=code.strip(), name=name.strip() or value)
+        return region_cache[ident]
+
+    def resolve_tax(ident: str) -> str | None:
+        if ident not in tax_cache:
+            tax_cache[ident] = tax_code or taxes.resolve(list_values.get(ident, ident))
+        return tax_cache[ident]
+
+    with db.bulk_insert(conn):
+        for record in fnsxml.iter_records(path, on_progress=note_progress):
+            stats.rows_read += 1
+            if limit and stats.rows_read > limit:
+                break
+            attrs = record.attrs
+            region = resolve_region(attrs.get("Region_ID", ""))
+            if region is None:
+                stats.unmapped_regions.add(list_values.get(attrs.get("Region_ID", ""), "?")[:80])
+                stats.skipped += 1
+                continue
+            tax = resolve_tax(attrs.get("Nalog_ID", ""))
+            if tax is None:
+                stats.unmapped_taxes.add(list_values.get(attrs.get("Nalog_ID", ""), "?")[:80])
+                stats.skipped += 1
+                continue
+
+            year = parse_year(attrs.get("TaxPeriod", ""))
+            oktmo = clean(attrs.get("Oktmo_ID") or attrs.get("Oktmo", ""))
+            mo_name = clean(attrs.get("MunObraz", ""))
+            npa = (clean(attrs.get("LawDoc", "")), clean(attrs.get("LawNum", "")),
+                   parse_date(attrs.get("LawDate", "")), clean(attrs.get("LawOrgan", "")))
+            common = (year, year, year, region, tax, oktmo, mo_name)
+
+            for item in record.rates:
+                flags = fnsxml.payer_flags(item)
+                object_name = clean(item.get("TaxObject", ""))
+                group, _detail = fnsxml.object_group(object_name)
+                rate_text = clean(item.get("TaxRates", ""))
+                rate_batch.append((
+                    *common, payer_from_flags(flags),
+                    int(flags["fl"]), int(flags["ul"]), int(flags["ip"]),
+                    "", object_name, group,
+                    parse_number(rate_text), rate_text, clean(item.get("Unit", "")),
+                    clean(item.get("Condition", "")), *npa, None, None, path.name,
+                ))
+                stats.rates += 1
+
+            for item in record.benefits:
+                flags = fnsxml.payer_flags(item)
+                amount = clean(item.get("Amount", ""))
+                unit = clean(item.get("Unit", ""))
+                benefit_batch.append((
+                    *common, payer_from_flags(flags),
+                    int(flags["fl"]), int(flags["ul"]), int(flags["ip"]),
+                    clean(item.get("Category", "")), benefit_kind(amount, unit),
+                    f"{amount} {unit}".strip(), parse_number(amount), unit,
+                    clean(item.get("Condition", "")),
+                    clean(item.get("Base") or item.get("LawArticle", "")),
+                    *npa, None, None, path.name,
+                ))
+                stats.benefits += 1
+
+            if len(rate_batch) + len(benefit_batch) >= BATCH:
+                flush()
+                if progress:
+                    progress(stats, read_bytes, total_bytes)
+        flush()
+
+    db.log_load(conn, "rates-xml", str(path), stats.rows_read,
+                stats.rates + stats.benefits, json.dumps(stats.as_dict(), ensure_ascii=False))
+    return stats
+
+
+def benefit_kind(amount: str, unit: str) -> str:
+    """Вид льготы выводится из размера: явного поля в выгрузке нет."""
+    value = parse_number(amount)
+    if value is None:
+        return ""
+    if unit.strip() in {"%", "проц.", "процентов"} or not unit.strip():
+        if value >= 100:
+            return "Освобождение от уплаты"
+        return f"Пониженный размер: {amount} %".replace(" .0 ", " ")
+    return f"Льгота: {amount} {unit}".strip()

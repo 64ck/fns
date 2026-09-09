@@ -89,9 +89,16 @@ CREATE TABLE IF NOT EXISTS rate (
     tax_code      TEXT,
     oktmo         TEXT,
     mo_name       TEXT,
-    payer         TEXT,             -- fl | ip | ul | all
+    payer         TEXT,             -- основная категория: fl | ip | ul | all
+    -- Выгрузка ФНС помечает каждую ставку и льготу категориями, к которым она
+    -- относится, и их может быть несколько. Поэтому фильтрация идёт по флагам,
+    -- а не по одному полю payer.
+    for_fl        INTEGER DEFAULT 0,
+    for_ul        INTEGER DEFAULT 0,
+    for_ip        INTEGER DEFAULT 0,
     payer_text    TEXT,             -- исходная формулировка «плательщик»
     object_name   TEXT,             -- объект налогообложения
+    object_group  TEXT,             -- группа объекта («Автомобили легковые…»)
     rate_value    REAL,
     rate_text     TEXT,
     rate_unit     TEXT,
@@ -107,6 +114,7 @@ CREATE TABLE IF NOT EXISTS rate (
 CREATE INDEX IF NOT EXISTS ix_rate_dim ON rate (tax_code, year, region_code);
 CREATE INDEX IF NOT EXISTS ix_rate_payer ON rate (tax_code, year, region_code, payer);
 CREATE INDEX IF NOT EXISTS ix_rate_period ON rate (tax_code, region_code, year_from, year_to);
+CREATE INDEX IF NOT EXISTS ix_rate_flags ON rate (tax_code, region_code, for_fl, for_ul, for_ip);
 
 CREATE TABLE IF NOT EXISTS benefit (
     id            INTEGER PRIMARY KEY,
@@ -117,7 +125,10 @@ CREATE TABLE IF NOT EXISTS benefit (
     tax_code      TEXT,
     oktmo         TEXT,
     mo_name       TEXT,
-    payer         TEXT,             -- fl | ip | ul | all
+    payer         TEXT,             -- основная категория: fl | ip | ul | all
+    for_fl        INTEGER DEFAULT 0,
+    for_ul        INTEGER DEFAULT 0,
+    for_ip        INTEGER DEFAULT 0,
     category      TEXT,             -- категория налогоплательщика (текст льготы)
     kind          TEXT,             -- вид льготы (освобождение / пониженная ставка / вычет)
     size_text     TEXT,
@@ -136,6 +147,7 @@ CREATE TABLE IF NOT EXISTS benefit (
 CREATE INDEX IF NOT EXISTS ix_benefit_dim ON benefit (tax_code, year, region_code);
 CREATE INDEX IF NOT EXISTS ix_benefit_payer ON benefit (tax_code, year, region_code, payer);
 CREATE INDEX IF NOT EXISTS ix_benefit_period ON benefit (tax_code, region_code, year_from, year_to);
+CREATE INDEX IF NOT EXISTS ix_benefit_flags ON benefit (tax_code, region_code, for_fl, for_ul, for_ip);
 
 -- Частотный словарь по льготам для облаков слов.
 -- Считается один раз командой `build-terms`, поэтому облако строится

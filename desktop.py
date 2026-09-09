@@ -75,7 +75,7 @@ def prepare(reimport: bool = False, allow_demo: bool = True) -> tuple[int, int, 
     if restored:
         print(f"  распакованы справочники: {', '.join(restored)}")
 
-    db.init_db(config.DB_PATH)
+    db.init_db(config.DB_PATH, report=lambda message: print(f"  {message}"))
     conn = db.connect(config.DB_PATH)
     _load_reference(conn)
     map_csv = config.REFERENCE_DIR / "form_5tn_map.csv"

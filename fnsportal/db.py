@@ -12,7 +12,7 @@ from typing import Iterable, Iterator, Sequence
 
 from . import config
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA = """
 PRAGMA journal_mode = WAL;
@@ -194,6 +194,54 @@ CREATE TABLE IF NOT EXISTS load_log (
 """
 
 
+# Столбцы, появившиеся после первой версии схемы. У пользователя уже может
+# лежать база, созданная прошлой версией программы: CREATE TABLE IF NOT EXISTS
+# её не тронет, поэтому недостающие столбцы добавляются отдельно — иначе
+# создание индексов по ним падает с «no such column».
+ADDED_COLUMNS: dict[str, tuple[tuple[str, str], ...]] = {
+    "rate": (
+        ("year_from", "INTEGER"), ("year_to", "INTEGER"),
+        ("for_fl", "INTEGER DEFAULT 0"), ("for_ul", "INTEGER DEFAULT 0"),
+        ("for_ip", "INTEGER DEFAULT 0"), ("object_group", "TEXT"),
+    ),
+    "benefit": (
+        ("year_from", "INTEGER"), ("year_to", "INTEGER"),
+        ("for_fl", "INTEGER DEFAULT 0"), ("for_ul", "INTEGER DEFAULT 0"),
+        ("for_ip", "INTEGER DEFAULT 0"),
+    ),
+}
+
+
+def migrate(conn: sqlite3.Connection) -> list[str]:
+    """Дотягивает старую базу до текущей схемы. Возвращает список изменений."""
+    applied: list[str] = []
+    tables = {
+        row["name"] for row in
+        conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    }
+    for table, columns in ADDED_COLUMNS.items():
+        if table not in tables:
+            continue
+        present = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+        added = []
+        for name, declaration in columns:
+            if name not in present:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {declaration}")
+                added.append(name)
+        if any(name.startswith("for_") for name in added):
+            # у старых записей категория хранилась одним полем payer
+            conn.execute(
+                f"""UPDATE {table}
+                       SET for_fl = CASE WHEN payer='fl' THEN 1 ELSE 0 END,
+                           for_ul = CASE WHEN payer='ul' THEN 1 ELSE 0 END,
+                           for_ip = CASE WHEN payer='ip' THEN 1 ELSE 0 END
+                     WHERE payer IN ('fl','ul','ip')""")
+        applied += [f"{table}.{name}" for name in added]
+    if applied:
+        conn.commit()
+    return applied
+
+
 def connect(path: Path | str | None = None, *, readonly: bool = False) -> sqlite3.Connection:
     db_path = Path(path or config.DB_PATH)
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -206,9 +254,12 @@ def connect(path: Path | str | None = None, *, readonly: bool = False) -> sqlite
     return conn
 
 
-def init_db(path: Path | str | None = None) -> Path:
+def init_db(path: Path | str | None = None, report=None) -> Path:
     db_path = Path(path or config.DB_PATH)
     conn = connect(db_path)
+    changes = migrate(conn)          # до создания индексов по новым столбцам
+    if changes and report:
+        report(f"структура базы обновлена: {', '.join(changes)}")
     with conn:
         conn.executescript(SCHEMA)
         conn.execute(

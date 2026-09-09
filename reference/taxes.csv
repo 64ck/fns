@@ -1,0 +1,5 @@
+code,name,short_name,level,form_code,sort_order
+tn,Транспортный налог,ТН,regional,5-ТН,10
+zn,Земельный налог,ЗН,local,5-МН,20
+nifl,Налог на имущество физических лиц,НИФЛ,local,5-МН,30
+niul,Налог на имущество организаций,НИО,regional,5-НИО,40

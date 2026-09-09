@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Данные ФНС и БД не версионируются: выгрузка ставок и льгот занимает ~3 ГБ
+data/raw/
+data/db/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm

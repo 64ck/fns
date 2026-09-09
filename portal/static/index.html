@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Аналитический налоговый портал</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>📊</text></svg>">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">📊</span>
+    <div>
+      <div class="title">Аналитический налоговый портал</div>
+      <div class="subtitle" id="db-info">загрузка…</div>
+    </div>
+  </div>
+  <div class="controls">
+    <label>Налог
+      <select id="tax-select"></select>
+    </label>
+    <label>Год
+      <select id="year-select"></select>
+    </label>
+    <button id="btn-help" class="ghost" title="Что показывает портал">?</button>
+  </div>
+</header>
+
+<main class="layout">
+  <aside class="sidebar">
+    <div class="sidebar-head">
+      <input id="region-search" type="search" placeholder="Поиск территории…" autocomplete="off">
+      <select id="district-filter"><option value="">Все округа</option></select>
+    </div>
+    <ul id="region-list" class="region-list"></ul>
+    <div class="sidebar-foot"><span id="region-count"></span></div>
+  </aside>
+
+  <section class="content">
+    <div id="profile-head" class="profile-head hidden">
+      <div>
+        <h1 id="region-title">—</h1>
+        <div id="region-meta" class="muted"></div>
+      </div>
+      <div id="profile-counters" class="counters"></div>
+    </div>
+
+    <nav class="tabs" id="tabs">
+      <button data-tab="overview" class="active">Обзор</button>
+      <button data-tab="rates">Ставки</button>
+      <button data-tab="benefits">Льготы</button>
+      <button data-tab="stats">Показатели формы</button>
+      <button data-tab="analytics">Аналитика</button>
+      <button data-tab="cloud">Облака слов</button>
+    </nav>
+
+    <div id="panel-overview" class="panel"></div>
+
+    <div id="panel-rates" class="panel hidden">
+      <div class="toolbar">
+        <div class="chips" id="rate-payer-chips"></div>
+        <input id="rate-search" type="search" placeholder="Поиск по объекту, плательщику, НПА…">
+        <button class="ghost" data-export="rates">Выгрузить CSV</button>
+      </div>
+      <div id="rates-body"></div>
+    </div>
+
+    <div id="panel-benefits" class="panel hidden">
+      <div class="toolbar">
+        <div class="chips" id="benefit-payer-chips"></div>
+        <input id="benefit-search" type="search" placeholder="Поиск по категории, условию, основанию…">
+        <button class="ghost" data-export="benefits">Выгрузить CSV</button>
+      </div>
+      <div id="benefits-body"></div>
+    </div>
+
+    <div id="panel-stats" class="panel hidden">
+      <div class="toolbar">
+        <label class="inline"><input type="checkbox" id="stats-only-filled" checked> только заполненные</label>
+        <label class="inline"><input type="checkbox" id="stats-compare" checked> сравнение со средним</label>
+        <button class="primary" id="stats-to-chart">Построить график по отмеченным</button>
+        <button class="ghost" data-export="form">Выгрузить CSV</button>
+      </div>
+      <div id="stats-body"></div>
+    </div>
+
+    <div id="panel-analytics" class="panel hidden">
+      <div class="toolbar wrap">
+        <label>Категория
+          <select id="an-payer">
+            <option value="total">ЮЛ + ФЛ</option>
+            <option value="ul">Юридические лица</option>
+            <option value="fl">Физические лица</option>
+          </select>
+        </label>
+        <label>Период с
+          <select id="an-year-from"></select>
+        </label>
+        <label>по
+          <select id="an-year-to"></select>
+        </label>
+        <label>Тип графика
+          <select id="an-chart">
+            <option value="dynamics">Динамика показателей</option>
+            <option value="vs-average">Сравнение со средним по субъектам</option>
+            <option value="ranking">Рейтинг субъектов за год</option>
+            <option value="structure">Структура за год</option>
+          </select>
+        </label>
+        <button class="ghost" data-export="series">Выгрузить CSV</button>
+      </div>
+      <div class="analytics-grid">
+        <div class="indicator-picker">
+          <input id="an-indicator-search" type="search" placeholder="Поиск показателя…">
+          <div id="an-indicators"></div>
+        </div>
+        <div class="chart-area">
+          <div id="an-chart-box" class="chart"></div>
+          <div id="an-table"></div>
+        </div>
+      </div>
+    </div>
+
+    <div id="panel-cloud" class="panel hidden">
+      <div class="toolbar wrap">
+        <div class="chips" id="cloud-payer-chips"></div>
+        <label>Территории
+          <select id="cloud-scope">
+            <option value="rf">Все субъекты (сводно)</option>
+            <option value="current">Текущая территория</option>
+            <option value="custom">Выбранные территории…</option>
+          </select>
+        </label>
+        <label>Годы
+          <select id="cloud-years">
+            <option value="current">Текущий год</option>
+            <option value="all">Все годы</option>
+          </select>
+        </label>
+        <label>Режим
+          <select id="cloud-mode">
+            <option value="freq">Частота слов</option>
+            <option value="distinctive">Отличительные слова категории</option>
+          </select>
+        </label>
+        <label class="inline"><input type="checkbox" id="cloud-bigrams" checked> словосочетания</label>
+        <input id="cloud-stopwords" type="search" placeholder="Исключить слова (через запятую)">
+        <button class="ghost" data-export="wordcloud">Выгрузить CSV</button>
+      </div>
+      <div id="cloud-regions" class="cloud-regions hidden"></div>
+      <div class="cloud-grid">
+        <div id="cloud-box" class="chart cloud"></div>
+        <div id="cloud-table"></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<div id="toast" class="toast hidden"></div>
+<dialog id="help-dialog">
+  <h2>Как устроен портал</h2>
+  <p>Данные связаны по трём измерениям: <b>год</b>, <b>регион</b>, <b>налог</b>.</p>
+  <ul>
+    <li><b>Ставки и льготы</b> — нормативные данные из открытого набора ФНС
+      (<code>7707329152-taxrates</code>): объект обложения, размер ставки, плательщик,
+      категории льготников с разделением на ФЛ / ИП / ЮЛ.</li>
+    <li><b>Показатели формы</b> — статотчётность ФНС (5-ТН и аналоги). Коды строк
+      меняются от года к году, поэтому показатели приведены к сквозному виду
+      по методичке.</li>
+    <li><b>Аналитика</b> — динамика за период, сравнение со средним по всем
+      субъектам, рейтинги и структура.</li>
+    <li><b>Облака слов</b> — частотный анализ формулировок льгот по категориям
+      плательщиков с вычетом типовых юридических клише.</li>
+  </ul>
+  <form method="dialog"><button class="primary">Понятно</button></form>
+</dialog>
+
+<script src="/static/vendor/echarts.min.js"></script>
+<script src="/static/vendor/echarts-wordcloud.min.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

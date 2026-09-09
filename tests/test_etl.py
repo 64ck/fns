@@ -133,3 +133,36 @@ def test_forms_reports_unknown_year(conn, tmp_path):
     path = _form_xlsx(tmp_path / "noyear.xlsx", [["НП", "1100", 1]], "Отчёт")
     stats = forms.load_file(conn, path, region_code="77")
     assert any("год" in problem for problem in stats.problems)
+
+
+def test_column_mapping_prefers_specific_alias():
+    """«Категория налогоплательщика» — это льготная категория, а не колонка «Плательщик»."""
+    aliases = rates.load_aliases()
+    header = ["Код региона", "Вид налога", "Налоговый период", "Объект налогообложения",
+              "Размер ставки", "Категория налогоплательщика", "Вид льготы", "Размер льготы"]
+    mapping = rates.map_columns(header, aliases)
+    assert mapping["benefit_category"] == "Категория налогоплательщика"
+    assert "payer_text" not in mapping
+
+    with_payer = rates.map_columns(header + ["Плательщик"], aliases)
+    assert with_payer["payer_text"] == "Плательщик"
+    assert with_payer["benefit_category"] == "Категория налогоплательщика"
+
+
+def test_autoload_classifies_and_skips_repeats(conn, tmp_path):
+    from fnsportal import autoload
+
+    _rates_csv(tmp_path / "taxrates.csv")
+    _form_xlsx(tmp_path / "5tn_2019_50.xlsx", [["НП ЮЛ", "1100", 10], ["НП ФЛ", "2100", 90],
+                                               ["ТС ЮЛ", "1200", 15], ["Сумма ЮЛ", "1400", 50]],
+               "Отчёт по форме 5-ТН")
+    (tmp_path / "заметки.csv").write_text("просто;текст\n1;2\n", encoding="utf-8")
+
+    first = autoload.run(conn, tmp_path, log=lambda _: None)
+    kinds = {name: kind for name, kind, _ in first.imported}
+    assert kinds == {"taxrates.csv": "rates", "5tn_2019_50.xlsx": "forms"}
+    assert first.unknown == ["заметки.csv"]
+    assert conn.execute("SELECT COUNT(*) FROM benefit_term").fetchone()[0] > 0
+
+    second = autoload.run(conn, tmp_path, log=lambda _: None)
+    assert second.imported == [] and len(second.skipped) == 2

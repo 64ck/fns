@@ -70,17 +70,23 @@ def load_aliases(path: Path | None = None) -> dict[str, list[str]]:
 
 
 def map_columns(header: Sequence[str], aliases: dict[str, list[str]]) -> dict[str, str]:
-    """Строит соответствие «поле портала -> имя колонки в файле»."""
-    keys = [(name, norm_key(name)) for name in header]
-    mapping: dict[str, str] = {}
-    used: set[str] = set()
+    """Строит соответствие «поле портала -> имя колонки в файле».
+
+    Сначала считаются все пары (поле, колонка) с оценкой совпадения:
+    3 — точное совпадение заголовка с алиасом, 2 — заголовок начинается с
+    алиаса, 1 — алиас входит в заголовок. Затем пары назначаются от лучших к
+    худшим, при равной оценке выигрывает более длинный (более специфичный)
+    алиас. Так «Категория налогоплательщика» достаётся полю benefit_category,
+    а не payer_text, у которого есть общий алиас «налогоплательщик».
+    """
+    keys = [(name, norm_key(name)) for name in header if clean(name)]
+    scored: list[tuple[int, int, str, str]] = []
     for field_name, variants in aliases.items():
-        best: tuple[int, str] | None = None
         for variant in variants:
             if not variant:
                 continue
             for original, key in keys:
-                if original in used or not key:
+                if not key:
                     continue
                 if key == variant:
                     score = 3
@@ -90,13 +96,16 @@ def map_columns(header: Sequence[str], aliases: dict[str, list[str]]) -> dict[st
                     score = 1
                 else:
                     continue
-                if best is None or score > best[0]:
-                    best = (score, original)
-            if best and best[0] == 3:
-                break
-        if best:
-            mapping[field_name] = best[1]
-            used.add(best[1])
+                scored.append((score, len(variant), field_name, original))
+
+    scored.sort(key=lambda item: (-item[0], -item[1]))
+    mapping: dict[str, str] = {}
+    used: set[str] = set()
+    for _score, _length, field_name, column in scored:
+        if field_name in mapping or column in used:
+            continue
+        mapping[field_name] = column
+        used.add(column)
     return mapping
 
 

@@ -160,6 +160,16 @@ CREATE TABLE IF NOT EXISTS meta (
     value TEXT
 );
 
+-- Что уже импортировано из рабочей папки: повторный запуск не грузит то же дважды
+CREATE TABLE IF NOT EXISTS imported_file (
+    path      TEXT PRIMARY KEY,
+    size      INTEGER,
+    mtime     REAL,
+    kind      TEXT,
+    loaded_at TEXT DEFAULT (datetime('now')),
+    details   TEXT
+);
+
 CREATE TABLE IF NOT EXISTS load_log (
     id          INTEGER PRIMARY KEY,
     loaded_at   TEXT DEFAULT (datetime('now')),

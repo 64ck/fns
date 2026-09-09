@@ -8,7 +8,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
-from . import analytics, config, db
+from . import analytics, autoload, config, db
 from .sources import forms, methodology, rates, tablestream
 
 
@@ -172,6 +172,19 @@ def cmd_demo(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_auto(args: argparse.Namespace) -> int:
+    """Импорт всего нового из папки: тип файла определяется по содержимому."""
+    conn = db.connect(args.db)
+    if args.reimport:
+        with conn:
+            conn.execute("DELETE FROM imported_file")
+    result = autoload.run(conn, Path(args.dir), default_tax=args.tax)
+    print(f"\nЗагружено файлов: {len(result.imported)}, пропущено (уже загружены): "
+          f"{len(result.skipped)}, не распознано: {len(result.unknown)}, "
+          f"с ошибками: {len(result.failed)}")
+    return 0
+
+
 def cmd_stats(args: argparse.Namespace) -> int:
     conn = db.connect(args.db)
     queries = {
@@ -283,6 +296,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--year-to", type=int, default=2024)
     p.add_argument("--seed", type=int, default=20240101)
     p.set_defaults(func=cmd_demo)
+
+    p = sub.add_parser("auto", help="загрузить всё новое из папки (тип файла определяется сам)")
+    p.add_argument("dir", nargs="?", default=str(config.ROOT))
+    p.add_argument("--tax", default="tn", help="налог для файлов форм отчётности")
+    p.add_argument("--reimport", action="store_true", help="перечитать уже загруженные файлы")
+    p.set_defaults(func=cmd_auto)
 
     p = sub.add_parser("stats", help="что уже загружено в БД")
     p.set_defaults(func=cmd_stats)

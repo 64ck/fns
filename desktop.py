@@ -48,6 +48,18 @@ def setup_console() -> None:
             pass
 
 
+def ask(question: str, default_yes: bool = True) -> bool:
+    """Вопрос в консоли; если ввод недоступен (запуск без консоли) — ответ по умолчанию."""
+    try:
+        answer = input(question)
+    except (EOFError, OSError):
+        return default_yes
+    answer = answer.strip().lower()
+    if not answer:
+        return default_yes
+    return answer not in {"n", "н", "no", "нет"}
+
+
 def free_port(preferred: int) -> int:
     for port in range(preferred, preferred + 20):
         with socket.socket() as probe:
@@ -86,8 +98,7 @@ def prepare(reimport: bool = False, allow_demo: bool = True) -> tuple[int, int, 
     if allow_demo and not any(counts):
         print("\n  Данных нет. Положите выгрузки ФНС рядом с программой"
               " и запустите её снова.")
-        answer = input("  Пока показать демонстрационный набор? [Enter — да, n — нет]: ")
-        if answer.strip().lower() not in {"n", "н", "no", "нет"}:
+        if ask("  Пока показать демонстрационный набор? [Enter — да, n — нет]: "):
             from fnsportal import demo
 
             print("  генерирую демонстрационные данные…")
@@ -118,7 +129,10 @@ def main(argv: list[str] | None = None) -> int:
         facts, rates_count, benefits = prepare(args.reimport, allow_demo=not args.no_demo)
     except Exception:  # noqa: BLE001 — окно не должно закрыться молча
         traceback.print_exc()
-        input("\n  Произошла ошибка. Нажмите Enter, чтобы закрыть окно…")
+        try:
+            input("\n  Произошла ошибка. Нажмите Enter, чтобы закрыть окно…")
+        except (EOFError, OSError):
+            pass
         return 1
 
     print(f"\n  В базе: {facts} значений форм · {rates_count} ставок · {benefits} льгот")

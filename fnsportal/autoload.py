@@ -65,10 +65,14 @@ def _known_codes(conn: sqlite3.Connection) -> dict[str, set[str]]:
     return codes
 
 
-def classify(conn: sqlite3.Connection, path: Path, codes: dict[str, set[str]] | None = None) -> tuple[str, str]:
-    """Определяет тип файла по содержимому: 'rates', 'forms' или 'unknown'.
+def classify(
+    conn: sqlite3.Connection, path: Path, codes: dict[str, set[str]] | None = None
+) -> tuple[str, str, str | None]:
+    """Определяет тип файла по содержимому.
 
-    Возвращает (тип, пояснение) — пояснение показывается пользователю.
+    Возвращает (тип, пояснение, налог): тип — 'rates', 'forms' или 'unknown';
+    пояснение показывается пользователю; налог заполняется для форм — по тому,
+    коды строк какого налога нашлись в файле.
     """
     codes = codes if codes is not None else _known_codes(conn)
     aliases = rates.load_aliases()
@@ -85,7 +89,7 @@ def classify(conn: sqlite3.Connection, path: Path, codes: dict[str, set[str]] | 
                                ("rate_value", "benefit_category", "benefit_kind", "benefit_size"))
                 if has_region and has_norm:
                     found = ", ".join(sorted(mapping)[:6])
-                    return "rates", f"распознаны колонки: {found}…"
+                    return "rates", f"распознаны колонки: {found}…", None
             # не похоже на ставки — ищем коды строк формы
             for row in table.rows:
                 probe.append(row)
@@ -97,11 +101,13 @@ def classify(conn: sqlite3.Connection, path: Path, codes: dict[str, set[str]] | 
                     if CODE_RE.match(cell.strip()) and cell.strip() in tax_codes
                 }
                 if len(hits) >= 3:
-                    return "forms", f"найдены коды строк формы ({tax_code}): {sorted(hits)[:5]}…"
+                    return ("forms",
+                            f"найдены коды строк формы ({tax_code}): {sorted(hits)[:5]}…",
+                            tax_code)
             break   # достаточно первой таблицы
     except Exception as error:  # noqa: BLE001 — файл может быть битым
-        return "unknown", f"не удалось прочитать: {error}"
-    return "unknown", "не похоже ни на ставки/льготы, ни на форму отчётности"
+        return "unknown", f"не удалось прочитать: {error}", None
+    return "unknown", "не похоже ни на ставки/льготы, ни на форму отчётности", None
 
 
 def _seen(conn: sqlite3.Connection, base: Path, path: Path) -> bool:
@@ -129,7 +135,7 @@ def run(
     conn: sqlite3.Connection,
     base: Path | None = None,
     *,
-    default_tax: str = "tn",
+    default_tax: str = "tn",   # если налог не определился по кодам строк
     rebuild_terms: bool = True,
     log: Callable[[str], None] = print,
 ) -> ImportResult:
@@ -149,7 +155,7 @@ def run(
         if _seen(conn, base, path):
             result.skipped.append(path.name)
             continue
-        kind, note = classify(conn, path, codes)
+        kind, note, file_tax = classify(conn, path, codes)
         size_mb = path.stat().st_size / 1e6
         if kind == "unknown":
             log(f"  ? {path.name} ({size_mb:.1f} МБ) — пропущен: {note}")
@@ -167,13 +173,14 @@ def run(
                 if stats.unmapped_taxes:
                     log(f"     не опознаны налоги: {sorted(stats.unmapped_taxes)[:5]}")
             else:
-                stats = forms.load_file(conn, path, tax_code=default_tax)
+                tax_code = file_tax or default_tax
+                stats = forms.load_file(conn, path, tax_code=tax_code)
                 if stats.problems:
                     log(f"     ! {'; '.join(stats.problems)}")
                     result.failed.append((path.name, "; ".join(stats.problems)))
                     continue
                 summary = f"{stats.region_code} / {stats.year}: {stats.values} значений"
-                taxes_touched.add(default_tax)
+                taxes_touched.add(tax_code)
         except Exception as error:  # noqa: BLE001 — один плохой файл не должен ронять запуск
             log(f"     ! ошибка: {error}")
             result.failed.append((path.name, traceback.format_exc(limit=2)))

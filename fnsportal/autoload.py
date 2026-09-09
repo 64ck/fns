@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
+import time
 import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -23,7 +24,14 @@ SKIP_DIRS = {
     "reference", "portal", "fnsportal", "tests", "db", "node_modules",
 }
 CODE_RE = re.compile(r"^\d{3,4}$")
-MAX_PROBE_ROWS = 300
+MAX_PROBE_ROWS = 3000
+HEADER_LOOKAHEAD = 5000
+# Форма отчётности — узкая таблица, где коды строк стоят в одной и той же
+# графе. Без этих условий обычные числа в данных (100, 110, 120) выглядели бы
+# как коды строк, и выгрузка ставок опознавалась бы как форма.
+FORM_MAX_WIDTH = 12
+FORM_MIN_CODES = 5
+PROGRESS_EVERY_SEC = 15
 
 
 @dataclass
@@ -80,14 +88,14 @@ def classify(
         for table in tablestream.iter_tables(path):
             probe: list[list[str]] = []
             idx, header, buffered = tablestream.find_header(
-                table.rows, required=["налог", "регион", "ставка", "льгот"])
+                table.rows, required=rates.HEADER_MARKERS, lookahead=HEADER_LOOKAHEAD)
             probe.extend(buffered)
             if header:
                 mapping = rates.map_columns(header, aliases)
                 has_region = any(mapping.get(key) for key in ("region_code", "region_name", "oktmo"))
                 has_norm = any(mapping.get(key) for key in
                                ("rate_value", "benefit_category", "benefit_kind", "benefit_size"))
-                if has_region and has_norm:
+                if has_region and (has_norm or len(mapping) >= 5):
                     found = ", ".join(sorted(mapping)[:6])
                     return "rates", f"распознаны колонки: {found}…", None
             # не похоже на ставки — ищем коды строк формы
@@ -96,14 +104,20 @@ def classify(
                 if len(probe) >= MAX_PROBE_ROWS:
                     break
             for tax_code, tax_codes in codes.items():
-                hits = {
-                    cell for row in probe for cell in row
-                    if CODE_RE.match(cell.strip()) and cell.strip() in tax_codes
-                }
-                if len(hits) >= 3:
-                    return ("forms",
-                            f"найдены коды строк формы ({tax_code}): {sorted(hits)[:5]}…",
-                            tax_code)
+                by_column: dict[int, set[str]] = {}
+                for row in probe:
+                    if len(row) > FORM_MAX_WIDTH:
+                        continue
+                    for column, cell in enumerate(row):
+                        text = cell.strip()
+                        if CODE_RE.match(text) and text in tax_codes:
+                            by_column.setdefault(column, set()).add(text)
+                for column, hits in sorted(by_column.items()):
+                    if len(hits) >= FORM_MIN_CODES:
+                        return ("forms",
+                                f"коды строк формы ({tax_code}) в графе {column + 1}: "
+                                f"{sorted(hits)[:5]}…",
+                                tax_code)
             break   # достаточно первой таблицы
     except Exception as error:  # noqa: BLE001 — файл может быть битым
         return "unknown", f"не удалось прочитать: {error}", None
@@ -161,10 +175,26 @@ def run(
             log(f"  ? {path.name} ({size_mb:.1f} МБ) — пропущен: {note}")
             result.unknown.append(path.name)
             continue
+        
         log(f"  → {path.name} ({size_mb:.1f} МБ): {kind}, {note}")
         try:
             if kind == "rates":
-                stats = rates.load_file(conn, path)
+                started = time.time()
+                last_shown = [started]
+
+                def show(stats, read_bytes, total_bytes, started=started, log=log):
+                    now = time.time()
+                    if now - last_shown[0] < PROGRESS_EVERY_SEC:
+                        return          # не заваливаем консоль на многочасовой загрузке
+                    last_shown[0] = now
+                    elapsed = now - started
+                    share = read_bytes / total_bytes if total_bytes else 0
+                    left = (elapsed / share - elapsed) if share > 0.01 else 0
+                    log(f"     {share * 100:5.1f}% | строк: {stats.rows_read:>12,} | "
+                        f"прошло {elapsed / 60:4.0f} мин, осталось ~{left / 60:.0f} мин"
+                        .replace(",", " "))
+
+                stats = rates.load_file(conn, path, progress=show if size_mb > 50 else None)
                 summary = (f"ставок {stats.rates}, льгот {stats.benefits}"
                            f" из {stats.rows_read} строк")
                 benefits_added = benefits_added or stats.benefits > 0
@@ -188,6 +218,11 @@ def run(
         log(f"     ✓ {summary}")
         result.imported.append((path.name, kind, summary))
         _remember(conn, base, path, kind, summary)
+
+    if result.unknown:
+        log("\n  Не распознаны файлы: " + ", ".join(result.unknown[:10]))
+        log("  Запустите программу с ключом --inspect — она покажет их структуру")
+        log("  и сохранит отчёт inspect-report.txt рядом с собой.")
 
     for tax_code in taxes_touched:
         inserted = forms.recompute_totals(conn, tax_code)

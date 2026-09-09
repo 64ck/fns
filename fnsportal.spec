@@ -5,6 +5,36 @@
 справочники распаковываются рядом с программой, чтобы их можно было править.
 """
 
+import datetime
+import json
+import os
+import pathlib
+import subprocess
+
+
+def _stamp_build() -> None:
+    """Кладёт в сборку отметку версии — по ней программа понимает,
+    вышло ли обновление."""
+    commit = ""
+    try:
+        commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"], capture_output=True, text=True, timeout=20,
+        ).stdout.strip()
+    except Exception:
+        pass
+    now = datetime.datetime.now(datetime.timezone.utc)
+    info = {
+        "commit": commit,
+        "built_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "date": now.strftime("%Y-%m-%d"),
+        "repo": os.environ.get("GITHUB_REPOSITORY", "64ck/fns"),
+    }
+    path = pathlib.Path("reference/build_info.json")
+    path.write_text(json.dumps(info, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+_stamp_build()
+
 datas = [
     ("portal/static", "portal/static"),
     ("reference", "reference"),

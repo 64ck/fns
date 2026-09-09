@@ -22,7 +22,7 @@ import traceback
 import webbrowser
 from pathlib import Path
 
-from fnsportal import analytics, autoload, config, db
+from fnsportal import analytics, autoload, config, db, diagnose, update
 from fnsportal.cli import _load_reference
 from fnsportal.sources import methodology
 
@@ -112,6 +112,79 @@ def prepare(reimport: bool = False, allow_demo: bool = True) -> tuple[int, int, 
     return counts
 
 
+def check_updates(auto_apply: bool = False) -> None:
+    """Проверяет обновления при запуске и, с согласия пользователя, ставит их."""
+    print(f"  Версия: {update.describe_version()}")
+    try:
+        info = update.check()
+    except Exception as error:  # noqa: BLE001 — обновление не должно мешать работе
+        print(f"  Проверка обновлений не удалась: {error}")
+        return
+    if not info.available:
+        print(f"  Обновления: {info.message}")
+        return
+
+    print(f"  ▲ {info.message}")
+    if info.detail:
+        print(f"    {info.detail}")
+    if info.mode == "git":
+        print("    установить: git pull (или запустите программу с ключом --update)")
+    if not auto_apply and not ask("  Установить обновление сейчас? [Enter — да, n — нет]: "):
+        return
+    installed, message = update.apply(info)
+    print(f"  {'✓' if installed else '!'} {message}")
+    if installed:
+        print("  Перезапустите программу, чтобы работала новая версия.")
+        try:
+            input("  Нажмите Enter, чтобы закрыть окно…")
+        except (EOFError, OSError):
+            pass
+        raise SystemExit(0)
+
+
+def inspect_mode(targets: list[str]) -> int:
+    """Печатает структуру файлов и сохраняет отчёт рядом с программой."""
+    config.ensure_dirs()
+    config.ensure_reference()
+    db.init_db(config.DB_PATH)
+    conn = db.connect(config.DB_PATH)
+    _load_reference(conn)
+    map_csv = config.REFERENCE_DIR / "form_5tn_map.csv"
+    if map_csv.exists():
+        methodology.load_into_db(conn, methodology.read_map_csv(map_csv))
+
+    if targets:
+        paths = [Path(target) for target in targets]
+        missing = [path for path in paths if not path.exists()]
+        if missing:
+            print(f"  Не найдены файлы: {', '.join(str(path) for path in missing)}")
+            paths = [path for path in paths if path.exists()]
+    else:
+        paths = list(autoload.candidates(config.ROOT))
+
+    if not paths:
+        print(f"  В папке {config.ROOT} не найдено файлов данных.")
+        try:
+            input("  Нажмите Enter, чтобы закрыть окно…")
+        except (EOFError, OSError):
+            pass
+        return 1
+
+    print(f"  Разбираю файлов: {len(paths)}. Для больших файлов это займёт время…\n")
+    text = diagnose.report(paths, conn)
+    conn.close()
+    print(text[:8000])
+    out = config.ROOT / "inspect-report.txt"
+    out.write_text(text, encoding="utf-8")
+    print(f"\n  Полный отчёт сохранён: {out}")
+    print("  Пришлите этот файл — по нему видно, как настроить распознавание колонок.")
+    try:
+        input("\n  Нажмите Enter, чтобы закрыть окно…")
+    except (EOFError, OSError):
+        pass
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Аналитический налоговый портал")
     parser.add_argument("--port", type=int, default=8000)
@@ -121,10 +194,25 @@ def main(argv: list[str] | None = None) -> int:
                         help="перечитать все файлы, даже уже загруженные")
     parser.add_argument("--no-demo", action="store_true",
                         help="не предлагать демонстрационные данные")
+    parser.add_argument("--inspect", nargs="*", metavar="ФАЙЛ",
+                        help="не запускать портал, а показать структуру файлов "
+                             "и сохранить отчёт inspect-report.txt")
+    parser.add_argument("--update", action="store_true",
+                        help="установить обновление, не спрашивая")
+    parser.add_argument("--no-update-check", action="store_true",
+                        help="не проверять обновления при запуске")
     args = parser.parse_args(argv)
 
     setup_console()
     print(BANNER)
+
+    update.cleanup_old()
+    if not args.no_update_check:
+        check_updates(auto_apply=args.update)
+
+    if args.inspect is not None:
+        return inspect_mode(args.inspect)
+
     try:
         facts, rates_count, benefits = prepare(args.reimport, allow_demo=not args.no_demo)
     except Exception:  # noqa: BLE001 — окно не должно закрыться молча

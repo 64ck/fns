@@ -8,7 +8,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
-from . import analytics, autoload, config, db
+from . import analytics, autoload, config, db, update
 from .sources import forms, methodology, rates, tablestream
 
 
@@ -212,6 +212,21 @@ def cmd_stats(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_update(args: argparse.Namespace) -> int:
+    print(f"Версия: {update.describe_version()}")
+    info = update.check()
+    print(f"{'Доступно обновление' if info.available else 'Обновлений нет'}: {info.message}")
+    if info.detail:
+        print(f"  {info.detail}")
+    if info.available and args.apply:
+        installed, message = update.apply(info)
+        print(("✓ " if installed else "! ") + message)
+        return 0 if installed else 1
+    if info.available:
+        print("Установить: python -m fnsportal update --apply")
+    return 0
+
+
 def cmd_serve(args: argparse.Namespace) -> int:
     import uvicorn
 
@@ -305,6 +320,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("stats", help="что уже загружено в БД")
     p.set_defaults(func=cmd_stats)
+
+    p = sub.add_parser("update", help="проверить и установить обновление")
+    p.add_argument("--apply", action="store_true", help="сразу установить")
+    p.set_defaults(func=cmd_update)
 
     p = sub.add_parser("serve", help="запустить локальный портал")
     p.add_argument("--host", default="127.0.0.1")

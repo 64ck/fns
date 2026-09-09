@@ -24,6 +24,12 @@ from . import tablestream
 
 BATCH = 20_000
 MAX_YEAR = date.today().year + 1
+# В сохранённой HTML-странице ФНС до таблицы с данными идут сотни служебных
+# строк (меню, «хлебные крошки», футер), поэтому заголовок ищем в широком окне.
+HEADER_LOOKAHEAD = 5000
+# Маркеры шапки задаются основами слов: «ставка» не является подстрокой
+# «Размер ставки», а «ставк» — является.
+HEADER_MARKERS = ("налог", "регион", "ставк", "льгот")
 
 RATE_COLUMNS = (
     "year", "year_from", "year_to", "region_code", "tax_code", "oktmo", "mo_name",
@@ -122,6 +128,7 @@ class RegionResolver:
                     self.by_name[self._name_key(value)] = row["code"]
         self.oktmo_prefix: dict[str, str] = {}   # выучивается по самим данным
         self.oktmo_votes: dict[str, dict[str, int]] = {}
+        self._cache: dict[tuple[str, str, str], str | None] = {}
 
     @staticmethod
     def _name_key(name: str) -> str:
@@ -135,6 +142,16 @@ class RegionResolver:
         return key.strip()
 
     def resolve(self, code: str = "", name: str = "", oktmo: str = "") -> str | None:
+        key = (code, name, oktmo)
+        cached = self._cache.get(key, ...)
+        if cached is not ...:
+            return cached                   # type: ignore[return-value]
+        resolved = self._resolve(code, name, oktmo)
+        if len(self._cache) < 200_000:
+            self._cache[key] = resolved
+        return resolved
+
+    def _resolve(self, code: str = "", name: str = "", oktmo: str = "") -> str | None:
         code = clean(code)
         if code:
             digits = re.sub(r"\D", "", code)
@@ -234,6 +251,7 @@ def load_file(
     default_year: int | None = None,
     limit: int | None = None,
     progress: object | None = None,
+    header_lookahead: int = HEADER_LOOKAHEAD,
 ) -> LoadStats:
     """Загружает файл ставок/льгот в БД. Работает потоком, память O(BATCH)."""
     path = Path(path)
@@ -262,11 +280,18 @@ def load_file(
             benefit_batch.clear()
         conn.commit()
 
+    total_bytes = path.stat().st_size
+    read_bytes = 0
+
+    def note_progress(position: int) -> None:
+        nonlocal read_bytes
+        read_bytes = position
+
     with db.bulk_insert(conn):
-        for table in tablestream.iter_tables(path):
+        for table in tablestream.iter_tables(path, on_progress=note_progress):
             rows = table.rows
             idx, header, buffered = tablestream.find_header(
-                rows, required=["налог", "регион", "ставка", "льгот"]
+                rows, required=HEADER_MARKERS, lookahead=header_lookahead,
             )
             if not header:
                 continue
@@ -304,7 +329,7 @@ def load_file(
                 if len(rate_batch) + len(benefit_batch) >= BATCH:
                     flush()
                     if progress:
-                        progress(stats)
+                        progress(stats, read_bytes, total_bytes)
         flush()
     db.log_load(conn, "rates", str(path), stats.rows_read, stats.rates + stats.benefits,
                 json.dumps(stats.as_dict(), ensure_ascii=False))

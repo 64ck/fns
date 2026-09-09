@@ -22,18 +22,30 @@ from . import config
 # --------------------------------------------------------------------- общее
 
 _WS_RE = re.compile(r"\s+")
-_NBSP = "   "
+# Неразрывные и «типографские» пробелы, которыми ФНС разделяет разряды чисел
+_SPECIAL = {"\u00a0": " ", "\u202f": " ", "\u2007": " ", "\u2009": " ", "–": "-"}
+_TRANSLATION = str.maketrans(_SPECIAL)
+_SPECIAL_CHARS = tuple(_SPECIAL)
 
 
 def clean(text: object) -> str:
-    """Схлопывает пробелы, чинит неразрывные пробелы и висячие переводы строк."""
+    """Схлопывает пробелы и чинит неразрывные пробелы.
+
+    Вызывается по нескольку раз на каждую ячейку, а ячеек в выгрузке ФНС
+    десятки миллионов, поэтому обычный случай (короткая строка без спецпробелов
+    и без двойных пробелов) проходит без единой регулярки.
+    """
     if text is None:
         return ""
-    s = str(text)
-    for ch in _NBSP:
-        s = s.replace(ch, " ")
-    s = s.replace("–", "-").replace("—", "—")
-    return _WS_RE.sub(" ", s).strip()
+    value = text if type(text) is str else str(text)
+    if not value:
+        return ""
+    if any(char in value for char in _SPECIAL_CHARS):
+        value = value.translate(_TRANSLATION)
+    value = value.strip()
+    if "  " in value or "\n" in value or "\t" in value or "\r" in value:
+        value = _WS_RE.sub(" ", value)
+    return value
 
 
 def norm_key(text: object) -> str:
@@ -107,8 +119,21 @@ def _payer_stems() -> tuple[tuple[str, tuple[str, ...]], ...]:
     return tuple((payer, tuple(stem_phrase(p) for p in phrases)) for payer, phrases in _PAYER_PATTERNS)
 
 
+@functools.lru_cache(maxsize=100_000)
+def _detect_payer_cached(text: str) -> str:
+    return _detect_payer_impl(text)
+
+
 def detect_payer_single(text: object) -> str:
-    """Категория плательщика по одной формулировке: 'fl' | 'ip' | 'ul' | 'all'.
+    """Категория плательщика по одной формулировке (с кэшем повторов)."""
+    if text is None:
+        return "all"
+    key = str(text)
+    return _detect_payer_cached(key) if len(key) <= 500 else _detect_payer_impl(key)
+
+
+def _detect_payer_impl(text: object) -> str:
+    """Разбор формулировки без кэша: 'fl' | 'ip' | 'ul' | 'all'.
 
     Правила: упоминание ИП в любом месте делает категорию «ИП» (это отдельная
     группа льготников); иначе побеждает то упоминание, которое встретилось

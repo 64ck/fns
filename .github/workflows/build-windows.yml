@@ -49,6 +49,20 @@ jobs:
           path: dist/fns-portal.exe
           retention-days: 90
 
+      - name: Свежая сборка в релиз «latest»
+        if: github.ref_type == 'branch'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Последняя сборка
+          prerelease: true
+          files: dist/fns-portal.exe
+          body: |
+            Автоматическая сборка ветки ${{ github.ref_name }}.
+            Коммит: ${{ github.sha }}
+
+            Программа проверяет этот релиз при запуске и предлагает обновиться.
+
       - name: Релиз по тегу
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2

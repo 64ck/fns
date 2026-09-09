@@ -15,3 +15,5 @@ data/db/
 build/
 dist/
 *.spec.bak
+reference/build_info.json
+inspect-report.txt

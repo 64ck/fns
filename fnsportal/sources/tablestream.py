@@ -17,9 +17,11 @@ import re
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Iterator, Sequence
+from typing import Callable, Iterable, Iterator, Sequence
 
 from ..textutil import clean, norm_key
+
+ProgressFn = Callable[[int], None]
 
 CHUNK = 1 << 20            # 1 МБ
 MAX_ROW_BUFFER = 32 << 20  # предохранитель от «строки» на пол-файла
@@ -77,14 +79,21 @@ def _open_binary(path: Path):
 
 # ------------------------------------------------------------------------ csv
 
-def iter_csv(path: Path, encoding: str | None = None, delimiter: str | None = None) -> Iterator[list[str]]:
+def iter_csv(
+    path: Path,
+    encoding: str | None = None,
+    delimiter: str | None = None,
+    on_progress: ProgressFn | None = None,
+) -> Iterator[list[str]]:
     with _open_binary(path) as raw:
         sample = raw.read(64 * 1024)
     enc = encoding or detect_encoding(sample)
     delim = delimiter or detect_delimiter(sample.decode(enc, "replace"))
     with _open_binary(path) as raw:
         stream = io.TextIOWrapper(raw, encoding=enc, errors="replace", newline="")
-        for row in csv.reader(stream, delimiter=delim, quotechar='"'):
+        for index, row in enumerate(csv.reader(stream, delimiter=delim, quotechar='"')):
+            if on_progress and index % 5000 == 0:
+                on_progress(raw.tell())
             yield [clean(c) for c in row]
 
 
@@ -148,45 +157,74 @@ _SCRIPT = re.compile(r"<(script|style)\b.*?</\1\s*>", re.I | re.S)
 
 
 def _html_cells(row_html: str) -> list[str]:
+    if "<script" in row_html or "<style" in row_html:
+        row_html = _SCRIPT.sub(" ", row_html)
     parts = _CELL_SPLIT.split(row_html)[1:]
     cells: list[str] = []
     for part in parts:
         head, _, body = part.partition(">")
-        span = _COLSPAN.search(head)
-        text = _BR.sub(" ", body)
-        text = _TAG.sub(" ", text)
-        text = html_mod.unescape(text)
+        span = _COLSPAN.search(head) if "colspan" in head or "COLSPAN" in head else None
+        text = body
+        if "<" in text:                       # обычная ячейка — просто текст
+            text = _TAG.sub(" ", _BR.sub(" ", text))
+        if "&" in text:
+            text = html_mod.unescape(text)
         cells.append(clean(text))
         if span:
             cells.extend([""] * (max(1, int(span.group(1))) - 1))
     return cells
 
 
-def iter_html(path: Path, encoding: str | None = None) -> Iterator[list[str]]:
-    """Потоково выдаёт строки всех таблиц HTML-файла любого размера."""
+def iter_html(
+    path: Path, encoding: str | None = None, on_progress: ProgressFn | None = None
+) -> Iterator[list[str]]:
+    """Потоково выдаёт строки всех таблиц HTML-файла любого размера.
+
+    Файл читается кусками по 1 МБ, декодируется инкрементально (иначе на
+    границе куска рвался бы многобайтовый символ), а разбор буфера идёт
+    строго вперёд: если очередной <tr> ещё не закрыт, буфер не пересканируется
+    с начала. Благодаря этому выгрузка на 3 ГБ читается за линейное время.
+    """
+    import codecs
+
     with _open_binary(path) as raw:
         sample = raw.read(64 * 1024)
     enc = encoding or detect_encoding(sample)
+    decoder = codecs.getincrementaldecoder(enc)(errors="replace")
 
     buffer = ""
+    read_bytes = 0
     with _open_binary(path) as raw:
         while True:
             chunk = raw.read(CHUNK)
             if not chunk:
                 break
-            buffer += chunk.decode(enc, "replace")
-            buffer = _SCRIPT.sub(" ", buffer)
+            read_bytes += len(chunk)
+            if on_progress:
+                on_progress(read_bytes)
+            buffer += decoder.decode(chunk)
+            position = 0
             while True:
-                m_open = _TR_OPEN.search(buffer)
+                m_open = _TR_OPEN.search(buffer, position)
                 if not m_open:
                     break
                 m_close = _TR_CLOSE.search(buffer, m_open.end())
                 if not m_close:
                     break
                 yield _html_cells(buffer[m_open.start(): m_close.start()])
-                buffer = buffer[m_close.end():]
-            if len(buffer) > MAX_ROW_BUFFER:  # мусор без закрывающих тегов
+                position = m_close.end()
+            if position:
+                buffer = buffer[position:]
+            m_open = _TR_OPEN.search(buffer)
+            if m_open is None:
+                # в буфере нет начала строки таблицы — держим только хвост,
+                # чтобы не потерять тег, разрезанный границей куска
+                buffer = buffer[-8:]
+            elif m_open.start():
+                buffer = buffer[m_open.start():]
+            if len(buffer) > MAX_ROW_BUFFER:   # мусор без закрывающих тегов
                 buffer = buffer[-CHUNK:]
+        buffer += decoder.decode(b"", final=True)
     tail_open = _TR_OPEN.search(buffer)
     if tail_open:
         yield _html_cells(buffer[tail_open.start():])
@@ -194,8 +232,16 @@ def iter_html(path: Path, encoding: str | None = None) -> Iterator[list[str]]:
 
 # ------------------------------------------------------------- единая точка входа
 
-def iter_tables(path: Path | str, sheet: str | int | None = None) -> Iterator[Table]:
-    """Возвращает таблицы источника; строки читаются лениво."""
+def iter_tables(
+    path: Path | str,
+    sheet: str | int | None = None,
+    on_progress: ProgressFn | None = None,
+) -> Iterator[Table]:
+    """Возвращает таблицы источника; строки читаются лениво.
+
+    `on_progress` вызывается с числом прочитанных байт — по нему видно, сколько
+    осталось до конца большого файла.
+    """
     path = Path(path)
     suffix = path.suffix.lower()
     if suffix == ".gz":
@@ -208,9 +254,9 @@ def iter_tables(path: Path | str, sheet: str | int | None = None) -> Iterator[Ta
     elif suffix == ".xls":
         yield from iter_xls(path, sheet)
     elif suffix in {".htm", ".html", ".xml"}:
-        yield Table(path.name, iter_html(path))
+        yield Table(path.name, iter_html(path, on_progress=on_progress))
     else:
-        yield Table(path.name, iter_csv(path))
+        yield Table(path.name, iter_csv(path, on_progress=on_progress))
 
 
 def _iter_zip(path: Path, sheet: str | int | None) -> Iterator[Table]:
